@@ -1,0 +1,10 @@
+{
+  "name":         "Geniric-Mechanie",
+  "version":      "0.0.2",
+  "author":       "Jayaprakash Singamsetty",
+  "license":      "Apache 2.0",
+  "summary":      "Install and Configure Generic Machines",
+  "source":       "https://github.com/infochimps-platform/puppet-modules/generic",
+  "dependencies": [
+  ]
+}

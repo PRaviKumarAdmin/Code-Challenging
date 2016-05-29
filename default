@@ -1,0 +1,133 @@
+##Script will be executed after Instance created!!
+
+HN=$MACHINENAME.$INTERNAL_DOMAIN
+##Below method will install puppet master in Instance
+PUPPET_URL=https://puppet.$INTERNAL_DOMAIN:<port-no>/packages/current/install.bash
+
+
+yum install -y --nogpgcheck ruby
+
+gem sources --remove http://rubygems.org/
+cat <<EOF > /root/.gemrc
+:sources:
+  - http://pserver:9292
+EOF
+<% end %>
+
+gem install bundler -v 1.7
+
+echo "Configuring logrotate..."
+
+cp /etc/logrotate.conf /etc/sssd/logrotate.conf.bak
+mkdir -p /var/log/rotated
+cat <<EOF > /etc/logrotate.conf
+/var/log/* /var/log/*/* /var/log/*/*/* {
+    compress
+    copytruncate
+    dateext
+    dateformat .%Y-%m-%d.%s
+    missingok
+    nomail
+    notifempty
+    olddir /var/log/rotated
+    rotate 7
+    size 50M
+    start 1
+    prerotate
+      bash -c "[[ ! \$1 =~ ^/var/log/rotated ]] && [[ ! \$1 == '/var/log/lastlog' ]]"
+    endscript
+  }
+EOF
+
+echo "Configuring cron for logrotate..."
+
+cp /etc/cron.hourly/logrotate /etc/cron.hourly/logrotate.bak
+
+cat <<EOF > /etc/cron.hourly/logrotate
+#!/bin/sh
+
+/usr/sbin/logrotate /etc/logrotate.conf >/dev/null 2>&1
+EXITVALUE=\$?
+if [ \$EXITVALUE != 0 ]; then
+  /usr/bin/logger -t logrotate "ALERT exited abnormally with [\$EXITVALUE]"
+fi
+exit 0
+EOF
+chmod +x /etc/cron.hourly/logrotate
+
+if [ -n "$AWS" ]; then
+  SELFIP=$(curl $HN/latest/meta-data/local-ipv4)
+  if [ $? == 0 ]; then
+    # Add a fake arp entry to fool (convince?) puppet facter into believing that we are on EC2
+    FAKE_IP=$(echo $SELFIP | sed -e "s/[0-9]*$/255/g")
+    arp -s $FAKE_IP fe:ff:ff:ff:ff:ff
+  fi
+fi
+
+##Installing LDAP server 
+yum install -y ipa-client libsss_sudo
+
+#There is a bug in ipa for for enrolling hosts with minimal privs that causes us to have to try twice.
+INSTALL_COUNT=0
+while [ -z $IPA_INSTALLED ] && [ $INSTALL_COUNT -le 2 ]; do
+  INSTALL_COUNT=$((INSTALL_COUNT+1))
+  echo $ENROLLER_PASSWORD  | ipa-client-install --force-join --enable-dns-updates -p $ENROLLER_PRINCIPAL -W --mkhomedir --hostname $HN -U
+  if [ $? == 0 ]; then IPA_INSTALLED=true; fi
+done
+
+# forwardable = yes does not work with Java's Kerberos support, which
+# requires forwardable = true.
+sed -i 's/forwardable = yes/forwardable = true/' /etc/krb5.conf
+
+# ipa-client properly sets up our hostname. run dhclient again to make sure dns search path
+# gets set accordingly
+dhclient eth0
+
+mkdir -p /var/log/sssd
+chkconfig --level 345 sssd on
+/sbin/service sssd restart
+yum install -y pciutils
+
+<% if config.key?('puppet_facts') %>
+# Install custom puppet facts
+#
+# These can later be edited on the host. They will not be modified
+# by puppet, only by invocations of this 'runcmd' script. Puppet
+# will read these, however, on every run.
+
+FACTS_DIR=/etc/facter/facts.d
+mkdir -p ${FACTS_DIR}
+cat >${FACTS_DIR}/node_facts.txt <<EOF
+<%   puppet_facts.each_pair  do |k, v| %>
+<%= k %>=<%= v %>
+<%   end %>
+EOF
+<% end %>
+
+curl -k $PUPPET_URL | bash
+
+echo "Adding custom yum script that only enables pserver yum repo..."
+
+mv --no-clobber /usr/bin/yum /usr/bin/yumexec
+cat <<EOF > /usr/bin/yum
+#!/bin/bash
+
+exec yumexec --disablerepo=* --enablerepo=pserver "\$@"
+EOF
+chmod 755 /usr/bin/yum
+<% end %>
+
+# When using FreeIPA as a certificate authority, the certificate
+# revocation list (CRL) will be updated regularly. The time of the
+# next update is available in the "next update" field of the
+# CRL. Unfortunately, Puppet will immediately treat the CRL as expired
+# after a new update is available. Because this can happen before a
+# script has had a chance to get the updated CRL and restart the
+# Puppet master, we'll need to simply ignore CRLs. See also
+#
+#     https://tickets.puppetlabs.com/browse/ENTERPRISE-515
+sed -ibak '/\[agent\]/a\    certificate_revocation = false' /etc/puppetlabs/puppet/puppet.conf
+<%= render('scripts', 'setup_puppet_ca') %>
+yum install -y at
+/sbin/service atd start
+echo "/sbin/service sssd restart" | at now + 5 minutes

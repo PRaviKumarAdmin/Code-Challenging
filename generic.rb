@@ -1,15 +1,17 @@
+##Noramal Reference Platfor-NRP to build instance through AWS
+
 require 'cfndsl'
 require File.join(File.dirname(__FILE__), '../lib/clientcommon')
 require File.join(File.dirname(__FILE__), '../lib/srp')
 
-raise "This template requires the constants 'SrpConfig' and 'AmiData' to be defined." unless [:AmiData, :SrpConfig].all? {|c| const_defined?(c) }
+raise "This template requires the constants 'SrpConfig' and 'AmiData' to be defined." unless [:AmiData, :NrpConfig].all? {|c| const_defined?(c) }
 
-srp_config = SrpConfig
+nrp_config = NrpConfig
 heat_mode = const_defined?(:OrchestrationEnvironment) && OrchestrationEnvironment == "heat"
 region = heat_mode ? "nova" : {"Ref" => "AWS::Region"}
 
-srp = SRP.new( SrpConfig )
-cluster = srp.clusters['generic']
+nrp = NRP.new( NrpConfig )
+cluster = nrp.clusters['generic']
 description = cluster.config['description'] || "generic cluster"
 
 ClientCommon::client_boilerplate(description, heat_mode, AmiData) {
@@ -29,9 +31,9 @@ ClientCommon::client_boilerplate(description, heat_mode, AmiData) {
       instance_type = config["instance_type"]
       placement_group = config["placement_group"]
       userdata = ClientCommon::userdata(volumes, heat_mode, facet_name: facet.name, facet: facet, facet_index: i)
-      security_groups = [ Ref(:SrpSecurityGroup) ]
+      security_groups = [ Ref(:NrpSecurityGroup) ]
       security_groups.push Ref(firewall_group) if firewall_group
-      boot_snapshot_id = srp_config['boot_snapshot_id'] && srp_config['boot_snapshot_id']['client']
+      boot_snapshot_id = nrp_config['boot_snapshot_id'] && nrp_config['boot_snapshot_id']['client']
       ebs_optimized = true if config.key?("ebs_optimized") && config["ebs_optimized"]
       ClientCommon::create_instance_and_volumes(
         boot_snapshot_id: boot_snapshot_id,
